@@ -2,9 +2,11 @@
 
 A small Expo (React Native) + TypeScript app: pick a meal photo from the library,
 send it to Claude's vision model through a serverless function (key stays server-side),
-and show back the food name, a rough calorie estimate, and macros. The user can review
-and correct the result before saving it in memory. Messy cases (non-food photo, uncertain
-or failed model response, network/timeout errors) are handled gracefully without crashing.
+and show back the meal broken into its visible ingredients — each with a calorie and
+macro estimate — that sum to a live meal total. The user can review, correct, add/remove
+ingredients, and save to an in-memory log they can later edit or delete. Messy cases
+(non-food photo, uncertain or failed model response, network/timeout errors) are handled
+gracefully without crashing.
 
 ## 0. Decisions locked
 
@@ -46,7 +48,9 @@ photo-calorie-app/
 │   │   └── calorie/
 │   │       ├── components/
 │   │       │   ├── PhotoPicker.tsx      # pick button + image preview
-│   │       │   ├── ResultCard.tsx       # read/edit food name, calories, macros
+│   │       │   ├── MealEditor.tsx       # reusable editor: ingredient rows + live total
+│   │       │   ├── ResultCard.tsx       # binds resultAtom → MealEditor (fresh result)
+│   │       │   ├── SavedMeals.tsx       # in-memory log: edit-in-place + delete
 │   │       │   ├── ConfidenceBanner.tsx # inline "uncertain / not food" banner
 │   │       │   └── StateView.tsx        # idle / loading / error states
 │   │       ├── hooks/
@@ -118,17 +122,33 @@ export const MacrosSchema = z.object({
   fat: z.number().nonnegative().nullable(),
 });
 
+// The meal is broken down per ingredient; the meal total is the sum of the rows
+// (see mealTotals below), never a separate number that could disagree with its parts.
+export const IngredientSchema = z.object({
+  name: z.string(),                                // e.g. "Corn tortilla ×4"
+  calories: z.number().nonnegative().nullable(),   // kcal for this component's amount
+  macros: MacrosSchema,
+});
+
 export const FoodAnalysisSchema = z.object({
   isFood: z.boolean(),
-  foodName: z.string(),                            // "" when not food
-  calories: z.number().nonnegative().nullable(),   // kcal estimate, null if unknown
-  macros: MacrosSchema,
+  foodName: z.string(),                            // overall dish name, "" when not food
+  ingredients: z.array(IngredientSchema),          // [] when not food
   confidence: z.enum(["high", "medium", "low"]),
   notes: z.string().nullable(),                    // e.g. "blurry", "partial plate"
 });
 
 export type Macros = z.infer<typeof MacrosSchema>;
+export type Ingredient = z.infer<typeof IngredientSchema>;
 export type FoodAnalysis = z.infer<typeof FoodAnalysisSchema>;
+
+// Roll the (possibly user-edited) ingredient list up into a meal total. Nulls are
+// skipped; the total is null only when nothing is known, so a partial breakdown
+// still totals what it can. Used by the editor's live total and the saved log.
+export function mealTotals(ingredients: Ingredient[]): {
+  calories: number | null;
+  macros: Macros;
+};
 
 // Calorie envelope: shared ApiResult, specialized to FoodAnalysis + the one
 // food-domain code (NON_FOOD) layered onto the shared transport codes.
@@ -138,9 +158,9 @@ export type AnalyzeResponse = ApiResult<FoodAnalysis, AnalyzeErrorCode>;
 ```
 
 The **JSON schema** handed to Claude (`output_config.format`) is the structural subset —
-`additionalProperties: false`, all keys required, nullables as `["number","null"]`. It lives in
-`foodAnalysis.ts` as `FOOD_JSON_SCHEMA` (one source of truth shared by server + client), not
-inlined in the function.
+`additionalProperties: false`, all keys required, `ingredients` as an array of ingredient
+objects, nullables as `["number","null"]`. It lives in `foodAnalysis.ts` as `FOOD_JSON_SCHEMA`
+(one source of truth shared by server + client), not inlined in the function.
 
 ---
 
@@ -217,14 +237,19 @@ the non-food/uncertainty signal — not formatting.
 
 **System prompt:**
 
-> You are a nutrition estimator. You are given one photo. Identify the primary meal or food
-> item and estimate its nutrition for the portion visible. Estimates are approximate; that is
+> You are a nutrition estimator. You are given one photo. Identify the meal and break it down
+> into its visible ingredients. For each ingredient, give a short name (include the count or
+> amount when it helps, e.g. "Corn tortilla ×4", "Black beans ~1/2 cup") and estimate its
+> calories (kcal) and macros (grams of protein, carbs, fat) for the amount visible. Keep the
+> list to the main components a person would log — typically 2 to 6 ingredients; group trivial
+> garnishes rather than listing each. Set `foodName` to a short name for the overall dish. Do
+> NOT return a separate total; the app sums the ingredients. Estimates are approximate; that is
 > expected. If the image does not contain food (e.g. a person, object, screenshot, or scenery),
-> set `isFood` to false, `foodName` to "", and all numbers to null. Set `confidence` to "low"
-> when the image is blurry, partial, ambiguous, or the portion is hard to judge; "high" only
-> when the food and portion are clearly identifiable. Use `notes` for one short caveat (e.g.
-> "portion estimated", "blurry"). Never refuse; if unsure, return your best guess with low
-> confidence. Calories are kcal for the whole visible portion; macros are grams.
+> set `isFood` to false, `foodName` to "", and `ingredients` to an empty array. Set `confidence`
+> to "low" when the image is blurry, partial, ambiguous, or the portion is hard to judge; "high"
+> only when the food and portions are clearly identifiable. Use `notes` for one short caveat
+> (e.g. "portions estimated", "blurry"). Never refuse; if unsure, return your best guess with
+> low confidence. Use null for any number you genuinely cannot estimate.
 
 **User prompt:**
 
@@ -246,7 +271,7 @@ the non-food/uncertainty signal — not formatting.
 |---|---|---|
 | **Non-food photo** | Model returns `isFood:false` | Inline `ConfidenceBanner`: *"This doesn't look like food — try another photo."* Result card hidden. No crash, no alert. |
 | **Low-confidence / blurry** | `confidence:"low"` (+ `notes`) | Result card shown **but** topped with an amber inline banner: *"Rough estimate — please review and correct."* Fields are editable. |
-| **Missing numbers** | `calories`/macros `null` | Card renders "—" placeholders; user can type values in. Save still works. |
+| **Missing numbers** | an ingredient's `calories`/macros `null` | That field renders empty; the row contributes nothing to the total until the user types a value in (numeric fields are sanitized to a non-negative decimal). Save still works. |
 | **Model returns junk / schema drift** | `safeParse` fails server-side → `MODEL_ERROR` | Inline error card with **Retry** button. |
 | **Network failure / no internet** | `fetch` rejects in `client.ts` | `Alert` (hard failure) + inline retry. |
 | **Timeout** | `AbortController` (~25s) in `client.ts` → `TIMEOUT` | `Alert`: *"Took too long — check your connection and retry."* |
@@ -263,15 +288,21 @@ nothing can crash mid-flight.
 ## 6. State (`state/atoms.ts`, Jotai)
 
 ```ts
-photoAtom: { uri, base64, mediaType } | null
+photoAtom:  { uri, base64, mediaType } | null
 statusAtom: "idle" | "loading" | "success" | "softError" | "hardError"
 resultAtom: FoodAnalysis | null        // the editable, corrected copy
 errorAtom:  AnalyzeError | null
+savedAtom:  SavedMeal[]                 // in-memory log; SavedMeal = FoodAnalysis & { id }
 ```
 
-- On success, the **server result is copied into `resultAtom`**; the user edits *that* (food
-  name, calories, macros) via `ResultCard`. "Save" snapshots `resultAtom` into an in-memory
-  `savedAtom` list and shows a confirmation — no DB, as specified.
+- On success, the **server result is held in `resultAtom`**; `ResultCard` renders it through
+  `MealEditor`, where the user edits the dish name and each ingredient row (add/remove rows; the
+  total is the live sum). "Save" appends the corrected meal to `savedAtom` and clears
+  `resultAtom`, which unmounts the editor — the meal now lives in the log.
+- `SavedMeals` renders `savedAtom` (newest first) and reuses the same `MealEditor` to **edit a
+  row in place** (keeping its id) or **delete** it (confirmed via `Alert`). Ids come from
+  `nextSavedId(list)` — one past the max existing id, so deletes never cause id reuse. In memory
+  only — no DB, as specified.
 - `useAnalyzePhoto` is the only writer of `statusAtom`, keeping transitions in one place.
 
 ---
@@ -290,8 +321,9 @@ errorAtom:  AnalyzeError | null
    downsize/encode to base64 within limits, show preview.
 5. **Wire the call** — `client.ts` (timeout + typed errors) → `analyzePhoto.ts` service →
    atoms. Happy path: photo → real estimate on screen.
-6. **Result card + editing** — `ResultCard` bound to `resultAtom`; edit fields; "Save" →
-   in-memory list + toast.
+6. **Result card + editing** — `MealEditor` (ingredient rows + live total) reused by
+   `ResultCard` (fresh result, bound to `resultAtom`) and `SavedMeals` (in-memory log with
+   edit-in-place + delete). "Save" appends to `savedAtom` and clears the result.
 7. **Messy cases** — implement the §5 table: non-food banner, low-confidence banner, retry
    card, Alerts for network/timeout/429. Test each by feeding a non-food image, a blurry image,
    airplane mode, and a forced 500.
