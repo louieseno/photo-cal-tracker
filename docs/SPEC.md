@@ -39,6 +39,7 @@ photo-calorie-app/
 ├── src/
 │   ├── core/
 │   │   └── api/
+│   │       ├── types.ts           # shared ApiResult<T> envelope + ApiError/codes
 │   │       ├── client.ts          # fetch wrapper → Supabase fn (timeout, typed errors)
 │   │       └── endpoints.ts       # ANALYZE endpoint URL + anon key from env
 │   ├── features/
@@ -83,46 +84,63 @@ secrets.
 
 ---
 
-## 2. The result type (`schema/foodAnalysis.ts`)
+## 2. The result type — layered: transport (`core/api`) + domain (`feature/schema`)
+
+The result type splits across two layers so the transport envelope is reusable while the food
+domain stays feature-scoped:
+
+- **`src/core/api/types.ts`** — the generic `ApiResult<T>` envelope every endpoint returns,
+  plus `ApiError<Code>` and the transport `ApiErrorCode` codes. Reusable by any future endpoint.
+- **`src/features/calorie/schema/foodAnalysis.ts`** — the food domain: Zod schema → inferred TS
+  type → JSON schema for the model, plus the calorie envelope specialized from `ApiResult`.
 
 Single source of truth — Zod schema → inferred TS type → JSON schema for the model. Note
-Sonnet 4.6 structured-output schemas don't support numeric `min`/`max`, so ranges are validated
-in Zod after parse, not in the model's schema.
+Sonnet 4.6 structured-output schemas don't support numeric `min`/`max`, so ranges (non-negative)
+are validated in Zod after parse, not in the model's schema.
 
 ```ts
+// src/core/api/types.ts — shared transport layer
+export type ApiErrorCode = "BAD_IMAGE" | "MODEL_ERROR" | "RATE_LIMIT" | "TIMEOUT" | "UNKNOWN";
+export type ApiError<Code extends string = ApiErrorCode> = { code: Code; message: string };
+export type ApiResult<T, Code extends string = ApiErrorCode> =
+  | { ok: true; data: T }
+  | { ok: false; error: ApiError<Code> };
+```
+
+```ts
+// src/features/calorie/schema/foodAnalysis.ts — food domain
 import { z } from "zod";
+import type { ApiError, ApiErrorCode, ApiResult } from "../../../core/api/types";
 
 export const MacrosSchema = z.object({
-  protein: z.number().nullable(), // grams, null if model can't tell
-  carbs: z.number().nullable(),
-  fat: z.number().nullable(),
+  protein: z.number().nonnegative().nullable(), // grams, null if model can't tell
+  carbs: z.number().nonnegative().nullable(),
+  fat: z.number().nonnegative().nullable(),
 });
 
 export const FoodAnalysisSchema = z.object({
   isFood: z.boolean(),
-  foodName: z.string(),                       // "" when not food
-  calories: z.number().nullable(),            // kcal estimate, null if unknown
+  foodName: z.string(),                            // "" when not food
+  calories: z.number().nonnegative().nullable(),   // kcal estimate, null if unknown
   macros: MacrosSchema,
   confidence: z.enum(["high", "medium", "low"]),
-  notes: z.string().nullable(),               // e.g. "blurry", "partial plate"
+  notes: z.string().nullable(),                    // e.g. "blurry", "partial plate"
 });
 
 export type Macros = z.infer<typeof MacrosSchema>;
 export type FoodAnalysis = z.infer<typeof FoodAnalysisSchema>;
 
-// API envelope returned by the Edge Function
-export type AnalyzeError = {
-  code: "NON_FOOD" | "BAD_IMAGE" | "MODEL_ERROR" | "RATE_LIMIT" | "TIMEOUT" | "UNKNOWN";
-  message: string;
-};
-export type AnalyzeResponse =
-  | { ok: true; data: FoodAnalysis }
-  | { ok: false; error: AnalyzeError };
+// Calorie envelope: shared ApiResult, specialized to FoodAnalysis + the one
+// food-domain code (NON_FOOD) layered onto the shared transport codes.
+export type AnalyzeErrorCode = ApiErrorCode | "NON_FOOD";
+export type AnalyzeError = ApiError<AnalyzeErrorCode>;
+export type AnalyzeResponse = ApiResult<FoodAnalysis, AnalyzeErrorCode>;
 ```
 
 The **JSON schema** handed to Claude (`output_config.format`) is the structural subset —
-`additionalProperties: false`, all keys required, nullables as `["number","null"]`. Generated
-inline in the function (small, explicit, no extra deps).
+`additionalProperties: false`, all keys required, nullables as `["number","null"]`. It lives in
+`foodAnalysis.ts` as `FOOD_JSON_SCHEMA` (one source of truth shared by server + client), not
+inlined in the function.
 
 ---
 
