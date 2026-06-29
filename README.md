@@ -13,9 +13,12 @@ The photo never goes straight to Claude from your phone. Instead it goes to a sm
 model on the server. The key stays on the server — it's never in the app, the repo, or
 `app.json`. The app only carries Supabase's public anon key, which is meant to be public.
 
-```
-phone  →  Supabase Edge Function (has the API key)  →  Claude vision
-       ←  ingredients + calories + macros (JSON)     ←
+```mermaid
+flowchart LR
+    A[📱 Phone<br/>Expo app] -->|base64 photo<br/>+ public anon key| B[☁️ Supabase Edge Function<br/>🔑 holds the API key]
+    B -->|image| C[🤖 Claude vision]
+    C -->|ingredients + calories<br/>+ macros JSON| B
+    B -->|validated estimate| A
 ```
 
 Claude returns the meal as a list of ingredients, each with its own calories and macros.
