@@ -38,6 +38,10 @@ supabase/functions/.env
 !.env.example
 !supabase/.env.example
 
+# Supabase CLI local state (machine-specific link/project metadata)
+supabase/.temp
+supabase/.branches
+
 # typescript
 *.tsbuildinfo
 
