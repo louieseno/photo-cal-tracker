@@ -2,6 +2,7 @@ import { ScrollView, StyleSheet, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAtomValue } from "jotai";
 import { colors } from "../../../shared/theme/colors";
+import { ConfidenceBanner } from "../components/ConfidenceBanner";
 import { PhotoPicker } from "../components/PhotoPicker";
 import { ResultCard } from "../components/ResultCard";
 import { SavedMeals } from "../components/SavedMeals";
@@ -12,9 +13,10 @@ import { useAnalyzePhoto } from "../hooks/useAnalyzePhoto";
 /**
  * The single app screen. Owns the one `useAnalyzePhoto` instance (the flow's
  * sole orchestrator) and composes the pieces:
- * photo picker → state view (error) → editable result card → saved log.
- * Step 6 shows the editable ResultCard + in-memory save; step 7 will layer the
- * non-food / low-confidence banners over the placeholder line below.
+ * photo picker → state view (network/server error) → editable result card →
+ * saved log. Soft, model-originated signals (non-food, low confidence) render
+ * as inline `ConfidenceBanner`s; hard failures Alert from the hook + show the
+ * inline retry in `StateView`.
  */
 export function CalorieScreen() {
   const { pickPhoto, retry, isPicking } = useAnalyzePhoto();
@@ -36,9 +38,10 @@ export function CalorieScreen() {
           result.isFood ? (
             <ResultCard />
           ) : (
-            <Text style={styles.notFood}>
-              This doesn&apos;t look like food — try another photo.
-            </Text>
+            <ConfidenceBanner
+              tone="info"
+              message="This doesn't look like food — try another photo."
+            />
           )
         ) : null}
 
@@ -65,13 +68,5 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 15,
     color: colors.textMuted,
-  },
-  notFood: {
-    fontSize: 15,
-    color: colors.textMuted,
-    fontStyle: "italic",
-    padding: 16,
-    borderRadius: 12,
-    backgroundColor: colors.surface,
   },
 });

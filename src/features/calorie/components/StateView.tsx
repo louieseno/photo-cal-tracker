@@ -9,11 +9,12 @@ type StateViewProps = {
 };
 
 /**
- * Renders the error flow state as a pure function of `statusAtom`. Loading rides
- * on the PhotoPicker button's spinner; idle/success render nothing here (the
- * picker and result handle those). Step 7 layers the soft/hard distinction
- * (banners vs. Alerts) on top; for now both error states share one inline
- * message + Retry.
+ * The inline error view + Retry, a pure function of `statusAtom`. Both soft and
+ * hard failures show here; hard ones additionally fire an `Alert` from
+ * `useAnalyzePhoto` (SPEC §5's soft-inline / hard-Alert split). Model-originated
+ * signals (non-food, low confidence) are *not* errors and render as
+ * `ConfidenceBanner`s elsewhere — this view is only for transport/server failures.
+ * Loading rides on the PhotoPicker button's spinner; idle/success render nothing.
  */
 export function StateView({ onRetry }: StateViewProps) {
   const status = useAtomValue(statusAtom);

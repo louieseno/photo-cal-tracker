@@ -22,6 +22,24 @@ import {
 const SOFT_CODES: ReadonlySet<AnalyzeErrorCode> = new Set(["BAD_IMAGE", "NON_FOOD"]);
 
 /**
+ * Title for the hard-failure Alert, per error code. The body is the error's own
+ * message (already user-facing). Soft codes never reach here — they render
+ * inline only.
+ */
+function hardAlertTitle(code: AnalyzeErrorCode): string {
+  switch (code) {
+    case "TIMEOUT":
+      return "Request timed out";
+    case "RATE_LIMIT":
+      return "Service is busy";
+    case "MODEL_ERROR":
+      return "Couldn't analyze photo";
+    default:
+      return "Something went wrong";
+  }
+}
+
+/**
  * Orchestrates the whole flow and is the sole writer of `statusAtom`, so screen
  * state can never desync: pick → downsize → encode → analyze → success/error.
  * `retry` re-runs analysis against the already-picked photo.
@@ -46,7 +64,15 @@ export function useAnalyzePhoto() {
     }
 
     setError(response.error);
-    setStatus(SOFT_CODES.has(response.error.code) ? "softError" : "hardError");
+    const isSoft = SOFT_CODES.has(response.error.code);
+    setStatus(isSoft ? "softError" : "hardError");
+
+    // Hard failures (network/timeout/429/server) get an Alert on top of the
+    // inline retry, per SPEC §5's soft-inline / hard-Alert split. Firing here in
+    // the sole orchestrator means it shows exactly once per attempt, not per render.
+    if (!isSoft) {
+      Alert.alert(hardAlertTitle(response.error.code), response.error.message);
+    }
   }
 
   async function pickPhoto() {
