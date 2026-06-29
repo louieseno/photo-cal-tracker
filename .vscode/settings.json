@@ -1,0 +1,10 @@
+{
+  // The Expo app is Node/TypeScript, but supabase/functions/* run on Deno.
+  // Scope the Deno language server to that folder only, so it resolves Deno and
+  // `npm:` imports (e.g. @anthropic-ai/sdk, zod via deno.json) instead of the
+  // Node TS server reporting "Cannot find module". Everything else stays on the
+  // normal TS server. Requires the Deno extension (denoland.vscode-deno).
+  "deno.enable": false,
+  "deno.enablePaths": ["./supabase/functions"],
+  "deno.lint": true
+}

@@ -1,0 +1,11 @@
+# Supabase project config. Only what this trial needs is set here; everything
+# else falls back to CLI defaults. Replace `project_id` with your linked project
+# ref before `supabase functions deploy analyze-meal`.
+project_id = "photo-cal-tracker"
+
+[functions.analyze-meal]
+# No login for the trial: the app calls the function with the public anon key.
+# The Anthropic key stays server-side (set via `supabase secrets set`), so the
+# thing that must stay secret never reaches the client. Production would turn
+# this back on (or add an app check / rate limit).
+verify_jwt = false
